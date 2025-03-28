@@ -1,174 +1,202 @@
 #!/usr/bin/env python3
-
-import base64
-import requests
+import os
+import sys
 import time
-import random
 import json
 import socket
-import ssl
 import nmap
-import subprocess
-import shutil
-from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urljoin, quote, urlparse, parse_qs
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+import requests
+import threading
+from urllib.parse import urljoin, urlparse
 from fake_useragent import UserAgent
+from colorama import Fore, Style, init
 import pyfiglet
 
-BANNER = """
-##########################################################
-#                                                        #
-#   ███████╗██╗  ██╗██████╗ ██╗   ██╗███████╗███████╗    #
-#   ██╔════╝╚██╗██╔╝██╔══██╗██║   ██║██╔════╝██╔════╝    #
-#   █████╗   ╚███╔╝ ██████╔╝██║   ██║███████╗█████╗      #
-#   ██╔══╝   ██╔██╗ ██╔═══╝ ██║   ██║╚════██║██╔══╝      #
-#   ███████╗██╔╝ ██╗██║     ╚██████╔╝███████║███████╗    #
-#   ╚══════╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚══════╝╚══════╝    #
-#                                                        #
-##########################################################
-"""
+init(autoreset=True)
 
-def print_banner():
-    print(pyfiglet.figlet_format("Scanner"))
-    print("Tool made by Anonymous Jordan Team")
-    print("https://t.me/AnonymousJordan\n")
+class Colors:
+    RED = Fore.RED
+    GREEN = Fore.GREEN
+    YELLOW = Fore.YELLOW
+    BLUE = Fore.BLUE
+    MAGENTA = Fore.MAGENTA
+    CYAN = Fore.CYAN
+    WHITE = Fore.WHITE
+    RESET = Style.RESET_ALL
 
-class VulnerabilityScanner:
-    def __init__(self, target):
-        self.target = target
-        self.vulnerabilities = []
+class CyberScanner:
+    def __init__(self):
+        self.target = ""
+        self.results = {
+            "ip_info": {},
+            "server_info": {},
+            "hidden_pages": [],
+            "security_headers": [],
+            "vulnerabilities": []
+        }
         self.headers = {'User-Agent': UserAgent().random}
-        
-    def check_sql_injection(self, url, param):
-        payloads = ["' OR 1=1--", "' UNION SELECT null, version()--"]
-        for payload in payloads:
-            try:
-                test_url = f"{url}?{param}={quote(payload)}"
-                resp = requests.get(test_url, headers=self.headers, timeout=10)
-                if "SQL syntax" in resp.text or "error in your SQL" in resp.text:
-                    self.vulnerabilities.append({
-                        'type': 'SQL Injection',
-                        'url': url,
-                        'param': param,
-                        'payload': payload,
-                        'severity': 'Critical'
-                    })
-            except Exception as e:
-                print(f"[!] SQLi Error: {e}")
+        self.lock = threading.Lock()
 
-    def check_xss(self, url, param):
-        payloads = ["<script>alert('xss')</script>", "<img src=x onerror=alert(1)>"]
-        for payload in payloads:
-            try:
-                test_url = f"{url}?{param}={quote(payload)}"
-                resp = requests.get(test_url, headers=self.headers, timeout=10)
-                if payload in resp.text:
-                    self.vulnerabilities.append({
-                        'type': 'XSS',
-                        'url': url,
-                        'param': param,
-                        'payload': payload,
-                        'severity': 'High'
-                    })
-            except Exception as e:
-                print(f"[!] XSS Error: {e}")
+    def clear_screen(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
 
-    def check_ssl_tls(self, host, port=443):
+    def show_banner(self):
+        self.clear_screen()
+        banner = pyfiglet.figlet_format("CyberScanner", font="slant")
+        print(f"{Colors.RED}{banner}")
+        print(f"{Colors.CYAN}Developed by Anonymous Jordan Team")
+        print(f"{Colors.MAGENTA}Telegram: https://t.me/AnonymousJordan\n")
+        print(f"{Colors.GREEN}{'='*50}\n")
+
+    def show_menu(self):
+        self.show_banner()
+        print(f"{Colors.YELLOW}[01] {Colors.WHITE}Full Cyber Scan")
+        print(f"{Colors.RED}[99] {Colors.WHITE}Exit Tool")
+        print(f"\n{Colors.CYAN}Select option: ", end="")
+        sys.stdout.flush()
+
+    def normalize_url(self, url):
+        return url if url.startswith(('http', 'https')) else f"http://{url}"
+
+    def get_ip_info(self):
+        domain = urlparse(self.target).netloc
         try:
-            context = ssl.create_default_context()
-            with socket.create_connection((host, port)) as sock:
-                with context.wrap_socket(sock, server_hostname=host) as ssock:
-                    cipher = ssock.cipher()
-                    if cipher[1] in ['SSLv3', 'TLSv1', 'TLSv1.1']:
-                        self.vulnerabilities.append({
-                            'type': 'Weak Cipher',
-                            'host': host,
-                            'port': port,
-                            'cipher': cipher[0],
-                            'version': cipher[1],
-                            'severity': 'Medium'
-                        })
+            ip = socket.gethostbyname(domain)
+            reverse_dns = socket.gethostbyaddr(ip)[0]
+            self.results['ip_info'] = {
+                'domain': domain,
+                'ip_address': ip,
+                'reverse_dns': reverse_dns
+            }
         except Exception as e:
-            print(f"[!] SSL Check Error: {e}")
+            self.log_error(f"IP Lookup Error: {str(e)}")
 
-    def run_nikto(self):
-        if shutil.which('nikto'):
+    def check_server_info(self):
+        try:
+            resp = requests.get(self.target, headers=self.headers, timeout=10)
+            server_headers = {
+                'Server': resp.headers.get('Server', 'Not disclosed'),
+                'X-Powered-By': resp.headers.get('X-Powered-By', 'Not disclosed'),
+                'X-AspNet-Version': resp.headers.get('X-AspNet-Version', 'Not disclosed')
+            }
+            self.results['server_info'] = server_headers
+        except Exception as e:
+            self.log_error(f"Server Check Error: {str(e)}")
+
+    def check_hidden_pages(self):
+        common_paths = [
+            'admin', 'login', 'wp-admin', 'backup', 'config',
+            'robots.txt', 'phpmyadmin', 'test', 'dev', 'old',
+            '.git', '.svn', 'web.config', 'sitemap.xml', 'README.md'
+        ]
+
+        def check_path(path):
+            url = urljoin(self.target, path)
             try:
-                result = subprocess.run(['nikto', '-h', self.target], 
-                                       capture_output=True, text=True)
-                self.vulnerabilities.append({
-                    'type': 'Nikto Scan',
-                    'output': result.stdout,
-                    'severity': 'Info'
-                })
-            except Exception as e:
-                print(f"[!] Nikto Error: {e}")
-        else:
-            print("[!] Nikto not found. Please install it.")
+                resp = requests.get(url, headers=self.headers, timeout=5)
+                if resp.status_code in (200, 403):
+                    with self.lock:
+                        self.results['hidden_pages'].append({
+                            'url': url,
+                            'status_code': resp.status_code,
+                            'content_length': len(resp.content)
+                        })
+            except Exception:
+                pass
 
-    def run_nmap(self):
-        nm = nmap.PortScanner()
-        nm.scan(self.target, arguments='-sV -O')
-        for host in nm.all_hosts():
-            for proto in nm[host].all_protocols():
-                ports = nm[host][proto].keys()
-                for port in ports:
-                    self.vulnerabilities.append({
-                        'type': 'Nmap Scan',
-                        'host': host,
-                        'port': port,
-                        'service': nm[host][proto][port]['name'],
-                        'version': nm[host][proto][port]['version'],
-                        'severity': 'Info'
-                    })
+        threads = []
+        for path in common_paths:
+            t = threading.Thread(target=check_path, args=(path,))
+            t.start()
+            threads.append(t)
+        
+        for t in threads:
+            t.join()
+
+    def check_security_headers(self):
+        required_headers = [
+            'Content-Security-Policy',
+            'X-Content-Type-Options',
+            'X-Frame-Options',
+            'X-XSS-Protection',
+            'Strict-Transport-Security'
+        ]
+        
+        try:
+            resp = requests.get(self.target, headers=self.headers, timeout=10)
+            missing = [h for h in required_headers if h not in resp.headers]
+            self.results['security_headers'] = {
+                'missing_headers': missing,
+                'severity': 'High' if missing else 'None'
+            }
+        except Exception as e:
+            self.log_error(f"Security Headers Check Error: {str(e)}")
+
+    def run_nmap_scan(self):
+        try:
+            nm = nmap.PortScanner()
+            nm.scan(hosts=urlparse(self.target).netloc, arguments='-sV -O -T4 --script=vuln')
+            self.results['nmap_scan'] = nm.scaninfo()
+        except Exception as e:
+            self.log_error(f"Nmap Error: {str(e)}")
+
+    def log_error(self, message):
+        with self.lock:
+            self.results['errors'].append(message)
 
     def generate_report(self):
-        report = {
-            'target': self.target,
-            'vulnerabilities': self.vulnerabilities,
-            'summary': {
-                'total': len(self.vulnerabilities),
-                'critical': sum(1 for v in self.vulnerabilities if v['severity'] == 'Critical'),
-                'high': sum(1 for v in self.vulnerabilities if v['severity'] == 'High'),
-                'medium': sum(1 for v in self.vulnerabilities if v['severity'] == 'Medium'),
-                'low': sum(1 for v in self.vulnerabilities if v['severity'] == 'Low'),
-                'info': sum(1 for v in self.vulnerabilities if v['severity'] == 'Info')
-            }
-        }
-        with open('vulnerability_report.json', 'w') as f:
-            json.dump(report, f, indent=4)
+        filename = f"cyberscan_report_{int(time.time())}.json"
+        with open(filename, 'w') as f:
+            json.dump(self.results, f, indent=4)
+        return filename
 
-def main():
-    print_banner()
-    target = input("Enter target URL: ").strip()
-    
-    if not target:
-        print("Target URL is required")
-        return
-
-    scanner = VulnerabilityScanner(target)
-    
-    # Run basic HTTP checks
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.submit(scanner.run_nmap)
-        executor.submit(scanner.run_nikto)
-        executor.submit(scanner.check_ssl_tls, urlparse(target).hostname)
+    def full_scan(self):
+        self.show_banner()
+        target = input(f"{Colors.CYAN}Enter target URL: {Colors.WHITE}").strip()
+        self.target = self.normalize_url(target)
         
-        # Add more concurrent checks here
+        print(f"\n{Colors.YELLOW}[+] Starting Full Cyber Scan on {self.target}")
+        print(f"{Colors.BLUE}{'='*50}\n")
+        
+        scan_functions = [
+            ('IP Information', self.get_ip_info),
+            ('Server Information', self.check_server_info),
+            ('Hidden Pages Scan', self.check_hidden_pages),
+            ('Security Headers Check', self.check_security_headers),
+            ('Nmap Vulnerability Scan', self.run_nmap_scan)
+        ]
 
-    scanner.generate_report()
-    print("\n[+] Scan completed. Report saved to vulnerability_report.json")
+        for desc, func in scan_functions:
+            print(f"{Colors.GREEN}[+] {desc}...", end="")
+            sys.stdout.flush()
+            try:
+                func()
+                print(f"{Colors.CYAN} Done")
+            except Exception as e:
+                print(f"{Colors.RED} Failed: {str(e)}")
+                self.log_error(f"{desc} Failed: {str(e)}")
+
+        report_file = self.generate_report()
+        print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
+
+    def run(self):
+        while True:
+            self.show_menu()
+            choice = input().strip()
+            if choice == '01':
+                self.full_scan()
+                input("\nPress Enter to return to menu...")
+            elif choice == '99':
+                print(f"\n{Colors.RED}Exiting CyberScanner...")
+                sys.exit(0)
+            else:
+                print(f"{Colors.RED}[!] Invalid option! Please choose 01 or 99")
+                time.sleep(2)
 
 if __name__ == '__main__':
     try:
-        main()
+        scanner = CyberScanner()
+        scanner.run()
     except KeyboardInterrupt:
-        print("\n[!] Scan interrupted by user")
-    except Exception as e:
-        print(f"[!] An error occurred: {e}")
+        print(f"\n{Colors.RED}[!] Emergency Exit!")
+        sys.exit(1)
