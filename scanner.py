@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import json
+import re
 import socket
 import nmap
 import requests
@@ -34,6 +35,12 @@ class CyberScanner:
             "hidden_pages": [],
             "admin_pages": [],
             "credentials": [],
+            "sensitive_data": {
+                "emails": [],
+                "phone_numbers": [],
+                "credit_cards": [],
+                "social_security": []
+            },
             "security_headers": [],
             "vulnerabilities": {
                 "sqli": [],
@@ -160,6 +167,25 @@ class CyberScanner:
                 })
         except Exception as e:
             self.log_error(f"Credentials Check Error: {str(e)}")
+
+    def check_sensitive_data(self):
+        patterns = {
+            'emails': r'\b[\w.-]+@[\w.-]+\.\w+\b',
+            'phone_numbers': r'(\+\d{1,3}\s?)?(\(\d{1,4}\)|\d{1,4})[\s.-]?\d{1,4}[\s.-]?\d{1,9}',
+            'credit_cards': r'\b(?:\d[ -]*?){13,16}\b',
+            'social_security': r'\b\d{3}-\d{2}-\d{4}\b'
+        }
+        
+        try:
+            resp = requests.get(self.target, headers=self.headers, timeout=10)
+            content = resp.text
+            
+            for data_type, pattern in patterns.items():
+                matches = re.findall(pattern, content)
+                if matches:
+                    self.results['sensitive_data'][data_type].extend(matches)
+        except Exception as e:
+            self.log_error(f"Sensitive Data Check Error: {str(e)}")
 
     def check_security_headers(self):
         required_headers = [
@@ -431,6 +457,18 @@ class CyberScanner:
         else:
             report.append("No credentials exposed")
 
+        # Sensitive Data
+        report.append("\nSENSITIVE DATA")
+        report.append("--------------")
+        if any(self.results['sensitive_data'].values()):
+            for data_type, data in self.results['sensitive_data'].items():
+                if data:
+                    report.append(f"\n{data_type.upper()} ({len(data)} findings):")
+                    for item in data:
+                        report.append(f"  - {item}")
+        else:
+            report.append("No sensitive data found")
+
         # Security Headers
         report.append("\nSECURITY HEADERS")
         report.append("---------------")
@@ -527,6 +565,7 @@ class CyberScanner:
             ('Server Information', self.check_server_info),
             ('Hidden Pages Scan', self.check_hidden_pages),
             ('Credentials Exposure Check', self.check_credentials_exposure),
+            ('Sensitive Data Check', self.check_sensitive_data),
             ('Security Headers Check', self.check_security_headers),
             ('Nmap Vulnerability Scan', self.run_nmap_scan),
             ('SQL Injection Check', self.check_sqli),
