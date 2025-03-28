@@ -8,6 +8,8 @@ import socket
 import nmap
 import requests
 import threading
+import subprocess
+import shutil
 from urllib.parse import urljoin, urlparse, quote, parse_qs
 from fake_useragent import UserAgent
 from colorama import Fore, Style, init
@@ -29,6 +31,7 @@ class CyberScanner:
     def __init__(self):
         self.target = ""
         self.filename = "cyberscan_report.txt"
+        self.nuclei_installed = shutil.which("nuclei") is not None
         self.results = {
             "ip_info": {},
             "server_info": {},
@@ -52,7 +55,8 @@ class CyberScanner:
                 "cmd_injection": [],
                 "open_redirect": [],
                 "misconfigurations": [],
-                "cve": []
+                "cve": [],
+                "nuclei_findings": []
             },
             "nmap_scan": {},
             "errors": []
@@ -209,7 +213,7 @@ class CyberScanner:
             content = resp.text
             for data_type, regex in patterns.items():
                 matches = list(set(re.findall(regex, content)))
-                if matches and data_type == 'phone_numbers':
+                if data_type == 'phone_numbers':
                     matches = [num for num in matches if len(num.replace('-', '').replace('.', '').replace(' ', '')) >= 8]
                 self.results['sensitive_data'][data_type] = matches
         except Exception as e:
@@ -260,6 +264,43 @@ class CyberScanner:
                         })
         except Exception as e:
             self.log_error(f"CVE Check Error: {str(e)}")
+
+    def run_nuclei_scan(self):
+        if not self.nuclei_installed:
+            self.log_error("Nuclei not installed. Skipping advanced vulnerability scan.")
+            return
+            
+        try:
+            print(f"{Colors.CYAN}[+] Updating Nuclei templates... ", end="")
+            subprocess.run(["nuclei", "-update-templates"], capture_output=True, timeout=30)
+            print(f"{Colors.GREEN}Done")
+            
+            print(f"{Colors.CYAN}[+] Running Nuclei scan... ", end="")
+            output = subprocess.check_output(
+                ["nuclei", "-u", self.target, "-json", "-severity", "high,critical"],
+                stderr=subprocess.STDOUT,
+                timeout=300
+            )
+            
+            findings = []
+            for line in output.decode().splitlines():
+                if line.strip():
+                    finding = json.loads(line)
+                    findings.append({
+                        'template': finding.get('template', 'N/A'),
+                        'severity': finding.get('severity', 'N/A').capitalize(),
+                        'description': finding.get('info', {}).get('description', 'N/A'),
+                        'url': finding.get('host', 'N/A'),
+                        'matcher': finding.get('matcher-name', 'N/A')
+                    })
+            self.results['vulnerabilities']['nuclei_findings'] = findings
+            print(f"{Colors.GREEN}Done")
+        except subprocess.CalledProcessError as e:
+            self.log_error(f"Nuclei Scan Error: {e.output.decode()}")
+        except subprocess.TimeoutExpired:
+            self.log_error("Nuclei scan timeout expired")
+        except Exception as e:
+            self.log_error(f"Nuclei Error: {str(e)}")
 
     def check_xss(self):
         xss_payloads = [
@@ -482,6 +523,20 @@ class CyberScanner:
         report.append(f"\n{Colors.YELLOW}VULNERABILITIES")
         report.append("-" * 40)
         for vuln_type in self.results['vulnerabilities']:
+            if vuln_type == 'nuclei_findings':
+                report.append(f"\n{Colors.RED}NUCLEI FINDINGS:")
+                if self.results['vulnerabilities'][vuln_type]:
+                    for finding in self.results['vulnerabilities'][vuln_type]:
+                        report.append(f"  Template: {finding['template']}")
+                        report.append(f"  Severity: {finding['severity']}")
+                        report.append(f"  Description: {finding['description']}")
+                        report.append(f"  URL: {finding['url']}")
+                        report.append(f"  Matcher: {finding['matcher']}")
+                        report.append("  " + "-"*30)
+                else:
+                    report.append("  No Nuclei findings")
+                continue
+                
             if self.results['vulnerabilities'][vuln_type]:
                 report.append(f"\n{vuln_type.upper()} ({len(self.results['vulnerabilities'][vuln_type])} findings):")
                 for vuln in self.results['vulnerabilities'][vuln_type]:
@@ -550,6 +605,7 @@ class CyberScanner:
             ('Command Injection Check', self.check_cmd_injection),
             ('Misconfiguration Check', self.check_misconfigurations),
             ('CVE Check', self.check_cve_vulnerabilities),
+            ('Nuclei Scan', self.run_nuclei_scan),
             ('Nmap Scan', self.run_nmap_scan)
         ]
 
