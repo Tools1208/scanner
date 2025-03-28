@@ -32,13 +32,18 @@ class CyberScanner:
             "ip_info": {},
             "server_info": {},
             "hidden_pages": [],
+            "admin_pages": [],
+            "credentials": [],
             "security_headers": [],
             "vulnerabilities": {
                 "sqli": [],
                 "xss": [],
                 "lfi": [],
                 "rfi": [],
+                "idor": [],
                 "cmd_injection": [],
+                "open_redirect": [],
+                "misconfigurations": [],
                 "cve": []
             },
             "nmap_scan": {},
@@ -101,9 +106,10 @@ class CyberScanner:
 
     def check_hidden_pages(self):
         common_paths = [
-            'admin', 'login', 'wp-admin', 'backup', 'config',
-            'robots.txt', 'phpmyadmin', 'test', 'dev', 'old',
-            '.git', '.svn', 'web.config', 'sitemap.xml', 'README.md'
+            'admin', 'login', 'wp-admin', 'administrator', 'admin.php',
+            'backup', 'config', 'robots.txt', 'phpmyadmin', 'test',
+            'dev', 'old', '.git', '.svn', 'web.config', 'sitemap.xml',
+            'README.md', 'LICENSE', 'CHANGELOG', 'db.php', 'database.php'
         ]
 
         def check_path(path):
@@ -117,6 +123,8 @@ class CyberScanner:
                             'status_code': resp.status_code,
                             'content_length': len(resp.content)
                         })
+                        if "admin" in path.lower():
+                            self.results['admin_pages'].append(url)
             except Exception as e:
                 self.log_error(f"Hidden Page Check Error ({url}): {str(e)}")
 
@@ -128,6 +136,30 @@ class CyberScanner:
         
         for t in threads:
             t.join()
+
+    def check_credentials_exposure(self):
+        sensitive_keywords = [
+            'password', 'passwd', 'api_key', 'secret', 'db_password',
+            'access_key', 'secret_key', 'username', 'user_pass'
+        ]
+        
+        try:
+            resp = requests.get(self.target, headers=self.headers, timeout=10)
+            content = resp.text.lower()
+            
+            found_credentials = []
+            for keyword in sensitive_keywords:
+                if keyword in content:
+                    found_credentials.append(keyword)
+            
+            if found_credentials:
+                self.results['credentials'].append({
+                    'url': self.target,
+                    'keywords_found': found_credentials,
+                    'severity': 'Critical'
+                })
+        except Exception as e:
+            self.log_error(f"Credentials Check Error: {str(e)}")
 
     def check_security_headers(self):
         required_headers = [
@@ -249,6 +281,46 @@ class CyberScanner:
                 except Exception as e:
                     self.log_error(f"RFI Check Error ({test_url}): {str(e)}")
 
+    def check_idor(self):
+        try:
+            # Test for Insecure Direct Object References
+            parsed_url = urlparse(self.target)
+            path = parsed_url.path
+            if '/user/' in path:
+                test_url = self.target.replace('/user/1', '/user/2')
+                resp = requests.get(test_url, headers=self.headers, timeout=10)
+                if resp.status_code == 200 and 'user 2' in resp.text.lower():
+                    self.results['vulnerabilities']['idor'].append({
+                        'url': test_url,
+                        'severity': 'High'
+                    })
+        except Exception as e:
+            self.log_error(f"IDOR Check Error: {str(e)}")
+
+    def check_open_redirect(self):
+        redirect_payloads = [
+            "https://google.com",
+            "https://evil.com",
+            "//malicious.site"
+        ]
+        parsed_url = urlparse(self.target)
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in redirect_payloads:
+                test_url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10, allow_redirects=False)
+                    if resp.status_code in (301, 302):
+                        if payload in resp.headers.get('Location', ''):
+                            self.results['vulnerabilities']['open_redirect'].append({
+                                'url': test_url,
+                                'payload': payload,
+                                'severity': 'Medium'
+                            })
+                except Exception as e:
+                    self.log_error(f"Open Redirect Check Error ({test_url}): {str(e)}")
+
     def check_cmd_injection(self):
         cmd_payloads = [
             "; ls",
@@ -272,6 +344,21 @@ class CyberScanner:
                         })
                 except Exception as e:
                     self.log_error(f"Command Injection Check Error ({test_url}): {str(e)}")
+
+    def check_misconfigurations(self):
+        try:
+            # Check for directory listing
+            parsed_url = urlparse(self.target)
+            test_url = f"{parsed_url.scheme}://{parsed_url.netloc}/.git/"
+            resp = requests.get(test_url, headers=self.headers, timeout=10)
+            if "Index of /.git" in resp.text:
+                self.results['vulnerabilities']['misconfigurations'].append({
+                    'url': test_url,
+                    'issue': 'Directory listing enabled',
+                    'severity': 'Medium'
+                })
+        except Exception as e:
+            self.log_error(f"Misconfiguration Check Error: {str(e)}")
 
     def check_cve_vulnerabilities(self):
         try:
@@ -324,6 +411,26 @@ class CyberScanner:
         else:
             report.append("No server information available")
 
+        # Admin Pages
+        report.append("\nADMIN PAGES")
+        report.append("-----------")
+        if self.results['admin_pages']:
+            for page in self.results['admin_pages']:
+                report.append(f"  - {page}")
+        else:
+            report.append("No admin pages found")
+
+        # Credentials Exposure
+        report.append("\nCREDENTIALS EXPOSURE")
+        report.append("--------------------")
+        if self.results['credentials']:
+            for cred in self.results['credentials']:
+                report.append(f"URL: {cred['url']}")
+                report.append(f"Keywords Found: {', '.join(cred['keywords_found'])}")
+                report.append(f"Severity: {cred['severity']}")
+        else:
+            report.append("No credentials exposed")
+
         # Security Headers
         report.append("\nSECURITY HEADERS")
         report.append("---------------")
@@ -350,8 +457,11 @@ class CyberScanner:
             if vulns:
                 report.append(f"\n{vuln_type.upper()} ({len(vulns)} findings):")
                 for vuln in vulns:
-                    report.append(f"  - URL: {vuln['url']}")
-                    report.append(f"    Payload: {vuln.get('payload', 'N/A')}")
+                    report.append(f"  - URL: {vuln.get('url', 'N/A')}")
+                    if 'payload' in vuln:
+                        report.append(f"    Payload: {vuln['payload']}")
+                    if 'issue' in vuln:
+                        report.append(f"    Issue: {vuln['issue']}")
                     report.append(f"    Severity: {vuln['severity']}")
                     if 'output' in vuln:
                         report.append(f"    Output: {vuln['output'][:100]}...")
@@ -416,13 +526,17 @@ class CyberScanner:
             ('IP Information', self.get_ip_info),
             ('Server Information', self.check_server_info),
             ('Hidden Pages Scan', self.check_hidden_pages),
+            ('Credentials Exposure Check', self.check_credentials_exposure),
             ('Security Headers Check', self.check_security_headers),
             ('Nmap Vulnerability Scan', self.run_nmap_scan),
             ('SQL Injection Check', self.check_sqli),
             ('Cross-Site Scripting (XSS) Check', self.check_xss),
             ('Local File Inclusion (LFI) Check', self.check_lfi),
             ('Remote File Inclusion (RFI) Check', self.check_rfi),
+            ('Insecure Direct Object Reference (IDOR) Check', self.check_idor),
+            ('Open Redirect Check', self.check_open_redirect),
             ('Command Injection Check', self.check_cmd_injection),
+            ('Security Misconfigurations Check', self.check_misconfigurations),
             ('CVE Vulnerability Check', self.check_cve_vulnerabilities)
         ]
 
