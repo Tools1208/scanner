@@ -32,7 +32,9 @@ class CyberScanner:
             "server_info": {},
             "hidden_pages": [],
             "security_headers": [],
-            "vulnerabilities": []
+            "vulnerabilities": [],
+            "nmap_scan": {},
+            "errors": []
         }
         self.headers = {'User-Agent': UserAgent().random}
         self.lock = threading.Lock()
@@ -56,13 +58,19 @@ class CyberScanner:
         sys.stdout.flush()
 
     def normalize_url(self, url):
+        if not url:
+            return ""
         return url if url.startswith(('http', 'https')) else f"http://{url}"
 
     def get_ip_info(self):
         domain = urlparse(self.target).netloc
         try:
             ip = socket.gethostbyname(domain)
-            reverse_dns = socket.gethostbyaddr(ip)[0]
+            try:
+                reverse_dns = socket.gethostbyaddr(ip)[0]
+            except socket.herror:
+                reverse_dns = "N/A"
+                
             self.results['ip_info'] = {
                 'domain': domain,
                 'ip_address': ip,
@@ -101,8 +109,8 @@ class CyberScanner:
                             'status_code': resp.status_code,
                             'content_length': len(resp.content)
                         })
-            except Exception:
-                pass
+            except Exception as e:
+                self.log_error(f"Hidden Page Check Error ({url}): {str(e)}")
 
         threads = []
         for path in common_paths:
@@ -135,26 +143,38 @@ class CyberScanner:
     def run_nmap_scan(self):
         try:
             nm = nmap.PortScanner()
-            nm.scan(hosts=urlparse(self.target).netloc, arguments='-sV -O -T4 --script=vuln')
+            nm.scan(hosts=urlparse(self.target).netloc, 
+                    arguments='-sV -O -T4 --script=vuln --script-args=unsafe=1')
             self.results['nmap_scan'] = nm.scaninfo()
         except Exception as e:
             self.log_error(f"Nmap Error: {str(e)}")
 
     def log_error(self, message):
         with self.lock:
-            self.results['errors'].append(message)
+            self.results['errors'].append({
+                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+                'message': message
+            })
 
     def generate_report(self):
         filename = f"cyberscan_report_{int(time.time())}.json"
-        with open(filename, 'w') as f:
-            json.dump(self.results, f, indent=4)
-        return filename
+        try:
+            with open(filename, 'w') as f:
+                json.dump(self.results, f, indent=4)
+            return filename
+        except Exception as e:
+            self.log_error(f"Report Generation Error: {str(e)}")
+            return None
 
     def full_scan(self):
         self.show_banner()
         target = input(f"{Colors.CYAN}Enter target URL: {Colors.WHITE}").strip()
         self.target = self.normalize_url(target)
         
+        if not self.target:
+            print(f"{Colors.RED}[!] Invalid target URL")
+            return
+
         print(f"\n{Colors.YELLOW}[+] Starting Full Cyber Scan on {self.target}")
         print(f"{Colors.BLUE}{'='*50}\n")
         
@@ -167,17 +187,21 @@ class CyberScanner:
         ]
 
         for desc, func in scan_functions:
-            print(f"{Colors.GREEN}[+] {desc}...", end="")
+            print(f"{Colors.GREEN}[+] {desc}... ", end="")
             sys.stdout.flush()
             try:
                 func()
-                print(f"{Colors.CYAN} Done")
+                print(f"{Colors.CYAN}Done")
             except Exception as e:
-                print(f"{Colors.RED} Failed: {str(e)}")
-                self.log_error(f"{desc} Failed: {str(e)}")
+                error_msg = f"{desc} Failed: {str(e)}"
+                print(f"{Colors.RED}Failed")
+                self.log_error(error_msg)
 
         report_file = self.generate_report()
-        print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
+        if report_file:
+            print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
+        else:
+            print(f"\n{Colors.RED}[!] Report generation failed")
 
     def run(self):
         while True:
@@ -199,4 +223,7 @@ if __name__ == '__main__':
         scanner.run()
     except KeyboardInterrupt:
         print(f"\n{Colors.RED}[!] Emergency Exit!")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n{Colors.RED}[!] Critical Error: {str(e)}")
         sys.exit(1)
