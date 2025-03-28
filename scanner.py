@@ -12,6 +12,7 @@ from fake_useragent import UserAgent
 from colorama import Fore, Style, init
 import pyfiglet
 
+# Initialize colorama for colored output
 init(autoreset=True)
 
 class Colors:
@@ -156,12 +157,24 @@ class CyberScanner:
                 'message': message
             })
 
-    def generate_report(self):
-        filename = f"cyberscan_report_{int(time.time())}.json"
+    def generate_report(self, save_path=None):
+        if not save_path:
+            save_path = input(f"{Colors.CYAN}Enter the full path to save the report (e.g., /path/to/report.json): {Colors.WHITE}").strip()
+        
+        # Ensure the directory exists
+        dir_path = os.path.dirname(save_path)
+        if dir_path and not os.path.exists(dir_path):
+            try:
+                os.makedirs(dir_path)
+            except Exception as e:
+                self.log_error(f"Directory Creation Error: {str(e)}")
+                print(f"{Colors.RED}[!] Failed to create directory: {dir_path}")
+                return None
+
         try:
-            with open(filename, 'w') as f:
+            with open(save_path, 'w') as f:
                 json.dump(self.results, f, indent=4)
-            return filename
+            return save_path
         except Exception as e:
             self.log_error(f"Report Generation Error: {str(e)}")
             return None
@@ -197,6 +210,7 @@ class CyberScanner:
                 print(f"{Colors.RED}Failed")
                 self.log_error(error_msg)
 
+        # Ask user where to save the report
         report_file = self.generate_report()
         if report_file:
             print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
