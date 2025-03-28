@@ -7,7 +7,7 @@ import socket
 import nmap
 import requests
 import threading
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 from fake_useragent import UserAgent
 from colorama import Fore, Style, init
 import pyfiglet
@@ -35,6 +35,8 @@ class CyberScanner:
             "security_headers": [],
             "vulnerabilities": [],
             "nmap_scan": {},
+            "xss_vulnerabilities": [],
+            "cve_vulnerabilities": [],
             "errors": []
         }
         self.headers = {'User-Agent': UserAgent().random}
@@ -150,6 +152,49 @@ class CyberScanner:
         except Exception as e:
             self.log_error(f"Nmap Error: {str(e)}")
 
+    def check_xss(self):
+        xss_payloads = [
+            "<script>alert('XSS')</script>",
+            "<img src=x onerror=alert(1)>",
+            "<svg/onload=alert('XSS')>"
+        ]
+        parsed_url = urlparse(self.target)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        query_params = parse_qs(parsed_url.query)
+
+        for param in query_params:
+            for payload in xss_payloads:
+                test_url = f"{base_url}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(test_url, headers=self.headers, timeout=10)
+                    if payload in resp.text:
+                        self.results['xss_vulnerabilities'].append({
+                            'url': test_url,
+                            'payload': payload,
+                            'severity': 'High'
+                        })
+                except Exception as e:
+                    self.log_error(f"XSS Check Error ({test_url}): {str(e)}")
+
+    def check_cve_vulnerabilities(self):
+        try:
+            nm = nmap.PortScanner()
+            nm.scan(hosts=urlparse(self.target).netloc, 
+                    arguments='--script vuln --script-args=unsafe=1')
+            script_results = nm._scan_result['scan']
+            for host, data in script_results.items():
+                if 'script' in data:
+                    for script, output in data['script'].items():
+                        if "CVE" in output:
+                            self.results['cve_vulnerabilities'].append({
+                                'host': host,
+                                'script': script,
+                                'output': output,
+                                'severity': 'Critical'
+                            })
+        except Exception as e:
+            self.log_error(f"CVE Check Error: {str(e)}")
+
     def log_error(self, message):
         with self.lock:
             self.results['errors'].append({
@@ -157,13 +202,12 @@ class CyberScanner:
                 'message': message
             })
 
-    def generate_report(self, save_path=None):
-        if not save_path:
-            save_path = input(f"{Colors.CYAN}Enter the full path to save the report (e.g., /path/to/report.json): {Colors.WHITE}").strip()
-        
-        # Ensure the directory exists
+    def generate_report(self):
+        # Save report to Documents folder on Windows
+        save_path = os.path.expanduser("~/Documents/cyberscan_report.json")
         dir_path = os.path.dirname(save_path)
-        if dir_path and not os.path.exists(dir_path):
+        
+        if not os.path.exists(dir_path):
             try:
                 os.makedirs(dir_path)
             except Exception as e:
@@ -196,7 +240,9 @@ class CyberScanner:
             ('Server Information', self.check_server_info),
             ('Hidden Pages Scan', self.check_hidden_pages),
             ('Security Headers Check', self.check_security_headers),
-            ('Nmap Vulnerability Scan', self.run_nmap_scan)
+            ('Nmap Vulnerability Scan', self.run_nmap_scan),
+            ('Cross-Site Scripting (XSS) Check', self.check_xss),
+            ('CVE Vulnerability Check', self.check_cve_vulnerabilities)
         ]
 
         for desc, func in scan_functions:
@@ -210,7 +256,6 @@ class CyberScanner:
                 print(f"{Colors.RED}Failed")
                 self.log_error(error_msg)
 
-        # Ask user where to save the report
         report_file = self.generate_report()
         if report_file:
             print(f"\n{Colors.MAGENTA}[+] Scan Completed - Report saved to: {report_file}")
