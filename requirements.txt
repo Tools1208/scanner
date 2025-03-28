@@ -1,7 +1,5 @@
 requests
-selenium
-webdriver-manager
 fake-useragent
 pyfiglet
 python-nmap
-dnspython
+colorama
